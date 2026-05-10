@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
+from datetime import datetime, timezone
 
 from database.db import (
     get_interactions, get_all_products,
@@ -79,7 +80,8 @@ def get_recommendations(customer_id):
             "customer_id":     customer_id,
             "recommendations": recommendations,
             "count":           len(recommendations),
-            "type":            "hybrid"
+            "type":            "hybrid",
+            "generated_at":    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         })
 
     except Exception as e:
@@ -91,7 +93,8 @@ def get_recommendations(customer_id):
                 "customer_id":     customer_id,
                 "recommendations": fallback,
                 "count":           len(fallback),
-                "type":            "fallback"
+                "type":            "fallback",
+                "generated_at":    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
             })
         except:
             return error(str(e))
