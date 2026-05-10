@@ -258,25 +258,38 @@ if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"AI Recommendation Service starting on port {port}")
 
-    # Auto-train models on startup if data exists
+    # On startup, only retrain if no saved model exists.
+    # If models are already saved (from a previous run), load them directly
+    # to avoid losing trained state on container restart.
     try:
-        print("Checking for existing data to train models...")
-        products     = get_all_products()
-        interactions = get_interactions()
+        print("Checking for saved models...")
+        collab_exists  = os.path.exists("model/collaborative_model.pkl")
+        content_exists = os.path.exists("model/content_model.pkl")
 
-        if products:
-            build_content_features(products)
-            print(f"Content model trained on {len(products)} products")
-
-        if len(interactions) >= 5:
-            train_collaborative_model(interactions)
-            print(f"Collaborative model trained on "
-                  f"{len(interactions)} interactions")
+        if content_exists:
+            print("Content model found — loading from disk, skipping retraining")
         else:
-            print(f"Only {len(interactions)} interactions — "
-                  f"collaborative model skipped")
+            print("No content model found — training from scratch...")
+            products = get_all_products()
+            if products:
+                build_content_features(products)
+                print(f"Content model trained on {len(products)} products")
+            else:
+                print("No products available — content model skipped")
+
+        if collab_exists:
+            print("Collaborative model found — loading from disk, skipping retraining")
+        else:
+            print("No collaborative model found — training from scratch...")
+            interactions = get_interactions()
+            if len(interactions) >= 5:
+                train_collaborative_model(interactions)
+                print(f"Collaborative model trained on {len(interactions)} interactions")
+            else:
+                print(f"Only {len(interactions)} interactions — "
+                      f"collaborative model skipped (need at least 5)")
 
     except Exception as e:
-        print(f"Startup training failed: {e}")
+        print(f"Startup model check failed: {e}")
 
     app.run(host='0.0.0.0', port=port, debug=False)

@@ -1,5 +1,6 @@
 import pickle
 import os
+import tempfile
 import pandas as pd
 from surprise import SVD, Dataset, Reader
 from surprise.model_selection import train_test_split
@@ -36,10 +37,18 @@ def train_collaborative_model(interactions):
     rmse        = accuracy.rmse(predictions, verbose=False)
     print(f"Collaborative model RMSE: {rmse:.4f}")
 
-    # Save model
+    # Atomic write — write to temp file then rename to avoid
+    # partial writes being loaded if the container dies mid-save
     os.makedirs("model", exist_ok=True)
-    with open(MODEL_PATH, "wb") as f:
-        pickle.dump({"model": model, "rmse": rmse}, f)
+    model_dir = os.path.dirname(os.path.abspath(MODEL_PATH))
+    with tempfile.NamedTemporaryFile(
+            mode='wb', dir=model_dir, delete=False, suffix='.tmp') as tmp:
+        pickle.dump({"model": model, "rmse": rmse,
+                     "trained_on": len(df)}, tmp)
+        tmp_path = tmp.name
+
+    os.replace(tmp_path, MODEL_PATH)
+    print(f"Collaborative model saved to {MODEL_PATH}")
 
     return model, rmse
 
@@ -47,9 +56,15 @@ def load_collaborative_model():
     """Load saved collaborative filtering model."""
     if not os.path.exists(MODEL_PATH):
         return None
-    with open(MODEL_PATH, "rb") as f:
-        data = pickle.load(f)
-    return data.get("model")
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            data = pickle.load(f)
+        return data.get("model")
+    except (pickle.UnpicklingError, EOFError, KeyError) as e:
+        # Corrupted file — remove it so it gets retrained
+        print(f"Corrupted collaborative model, removing: {e}")
+        os.remove(MODEL_PATH)
+        return None
 
 def get_collaborative_recommendations(customer_id,
                                        all_product_ids,

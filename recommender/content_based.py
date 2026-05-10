@@ -1,5 +1,6 @@
 import pickle
 import os
+import tempfile
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -27,14 +28,22 @@ def build_content_features(products):
     )
     tfidf_matrix = vectorizer.fit_transform(df['features'])
 
-    # Save model
+    # Atomic write — write to temp file then rename to avoid
+    # partial writes being loaded if the container dies mid-save
     os.makedirs("model", exist_ok=True)
-    with open(MODEL_PATH, "wb") as f:
+    model_dir = os.path.dirname(os.path.abspath(MODEL_PATH))
+    with tempfile.NamedTemporaryFile(
+            mode='wb', dir=model_dir, delete=False, suffix='.tmp') as tmp:
         pickle.dump({
             "vectorizer":   vectorizer,
             "tfidf_matrix": tfidf_matrix,
-            "product_ids":  df['product_id'].tolist()
-        }, f)
+            "product_ids":  df['product_id'].tolist(),
+            "trained_on":   len(df)
+        }, tmp)
+        tmp_path = tmp.name
+
+    os.replace(tmp_path, MODEL_PATH)
+    print(f"Content model saved to {MODEL_PATH} ({len(df)} products)")
 
     return vectorizer, tfidf_matrix
 
@@ -42,8 +51,14 @@ def load_content_model():
     """Load saved content-based model."""
     if not os.path.exists(MODEL_PATH):
         return None
-    with open(MODEL_PATH, "rb") as f:
-        return pickle.load(f)
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            return pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, KeyError) as e:
+        # Corrupted file — remove it so it gets retrained
+        print(f"Corrupted content model, removing: {e}")
+        os.remove(MODEL_PATH)
+        return None
 
 def get_similar_products(product_id, n=10):
     """Get products similar to a given product."""
