@@ -7,3 +7,10 @@ model/
 *.joblib
 .venv/
 venv/
+
+# Datasets are downloaded, never committed. Run scripts/download_dataset.py
+# to fetch the source data, or drop a Kaggle CSV into data/raw/ by hand.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
