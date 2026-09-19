@@ -8,3 +8,7 @@ mysql-connector-python==8.4.0
 python-dotenv==1.0.1
 gunicorn==22.0.0
 scipy==1.13.1
+# Reading the source dataset: UCI publishes it as .xlsx
+openpyxl==3.1.5
+# Persisting the scikit-learn pipelines
+joblib==1.4.2

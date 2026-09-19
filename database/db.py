@@ -30,13 +30,20 @@ def get_interactions():
     return rows
 
 def get_all_products():
-    """Get all products for content-based filtering."""
+    """Get all active products for content-based filtering.
+
+    The products table uses a soft delete: the Java product-service sets
+    deleted_at rather than removing the row, and filters on it. These raw
+    queries have to apply the same filter or deleted products leak back into
+    recommendations after an administrator has removed them.
+    """
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("""
         SELECT product_id, name, description, 
                category, price
         FROM products
+        WHERE deleted_at IS NULL
     """)
     rows = cursor.fetchall()
     cursor.close()
@@ -59,20 +66,40 @@ def get_customer_purchases(customer_id):
     conn.close()
     return [r['product_id'] for r in rows]
 
-def get_top_products(limit=5):
-    """Get globally top-rated products as fallback."""
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("""
+def get_top_products(limit=5, exclude_ids=None):
+    """Globally most-purchased active products, used as the cold-start fallback.
+
+    `exclude_ids` lets the caller drop products the customer has already bought.
+    Without it the fallback happily recommends something the customer just
+    purchased, which is very visible on a small catalogue.
+    """
+    exclude_ids = list(exclude_ids or [])
+
+    sql = """
         SELECT p.product_id, p.name, p.category,
                p.price, p.image_url,
                COUNT(oi.item_id) as purchase_count
         FROM products p
         LEFT JOIN order_items oi ON p.product_id = oi.product_id
+        WHERE p.deleted_at IS NULL
+    """
+    params = []
+
+    if exclude_ids:
+        placeholders = ",".join(["%s"] * len(exclude_ids))
+        sql += f" AND p.product_id NOT IN ({placeholders})"
+        params.extend(exclude_ids)
+
+    sql += """
         GROUP BY p.product_id
         ORDER BY purchase_count DESC
         LIMIT %s
-    """, (limit,))
+    """
+    params.append(limit)
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(sql, tuple(params))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -90,6 +117,7 @@ def get_product_details(product_ids):
                price, image_url, description
         FROM products
         WHERE product_id IN ({format_strings})
+          AND deleted_at IS NULL
     """, tuple(product_ids))
     rows = cursor.fetchall()
     cursor.close()
