@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from database.db import (
     get_interactions, get_all_products,
     get_product_details, log_interaction,
-    get_top_products
+    get_top_products, ensure_schema
 )
 
 # The recommender modules are imported lazily inside their handlers. They pull
@@ -28,6 +28,14 @@ allowed_origins = os.getenv(
 ).split(',')
 
 CORS(app, origins=[o.strip() for o in allowed_origins])
+
+# Run at import, not under `if __name__ == '__main__'`. The container starts
+# gunicorn, which imports this module rather than executing it, so anything in
+# the __main__ block never runs in production - which is exactly how the
+# missing product_interactions table went unnoticed. ensure_schema() swallows
+# connection errors so an unconfigured database still leaves /health and the
+# dataset routes serving.
+ensure_schema()
 
 # How many raw rows the data pipeline will read. The full dataset is about a
 # million rows; capping it keeps a small container within its memory budget.
