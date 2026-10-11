@@ -2,8 +2,13 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
+import threading
 import traceback
 from datetime import datetime, timezone
+
+# Guards /api/data/download so concurrent calls cannot spawn several
+# million-row workbook parses at once in the same worker.
+_download_lock = threading.Lock()
 
 from database.db import (
     get_interactions, get_all_products,
@@ -161,6 +166,61 @@ def data_source():
         "row_limit_applied": DATA_ROW_LIMIT,
     }
     return success(info)
+
+
+@app.route('/api/data/download', methods=['POST'])
+def data_download():
+    """Fetch the source dataset onto the running service.
+
+    The dataset is baked into the container image at build time, so normally
+    this is never needed. It exists as the recovery path for the two cases
+    where it is: the build-time download failed (it is deliberately non-fatal,
+    so a UCI outage cannot block an unrelated deploy), or the service is
+    running somewhere the image was built without it.
+
+    It matters because the administration UI tells the operator to run
+    scripts/download_dataset.py, which is not something you can do inside a
+    deployed container.
+
+    Runs the script as a subprocess rather than importing it: parsing a
+    million-row workbook is memory-hungry, and a subprocess hands that memory
+    back on exit instead of leaving it in the gunicorn worker.
+    """
+    import subprocess
+    import sys
+
+    from dataset import loader
+
+    if loader.candidate_files():
+        # Idempotent, and it bounds the cost of repeat calls on an endpoint
+        # that has no authentication in front of it.
+        return error("Dataset already present. Delete the file in "
+                     "data/raw to force a re-download.", 409)
+
+    if not _download_lock.acquire(blocking=False):
+        return error("A download is already running.", 409)
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "scripts/download_dataset.py"],
+            capture_output=True, text=True, timeout=900,
+            cwd=os.path.dirname(os.path.abspath(__file__)))
+    except subprocess.TimeoutExpired:
+        return error("Download timed out after 15 minutes.", 504)
+    finally:
+        _download_lock.release()
+
+    tail = (proc.stdout or "").strip().splitlines()[-12:]
+    if proc.returncode != 0:
+        return error("Download failed: "
+                     + " | ".join(tail + [(proc.stderr or "").strip()[:200]]),
+                     502)
+
+    return success({
+        "message": "Dataset downloaded",
+        "log": tail,
+        "source": loader.source_info(),
+    })
 
 
 @app.route('/api/data/eda', methods=['GET'])
