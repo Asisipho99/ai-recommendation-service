@@ -117,9 +117,18 @@ def get_content_recommendations(purchased_ids,
     if not purchased_indices:
         return []
 
-    # Average feature vector of purchased products
+    # Average feature vector of purchased products.
+    #
+    # np.asarray is load-bearing. Calling .mean(axis=0) on a scipy sparse
+    # matrix returns numpy.matrix, and scikit-learn's check_array rejects that
+    # type outright with "np.matrix is not supported". Without the conversion
+    # this function raises for every customer whose purchased_ids is
+    # non-empty - that is, for exactly the customers content-based
+    # recommendation exists to serve. Customers with no order history return
+    # [] a few lines above and never reach here, so the failure stays hidden
+    # whenever the system is tested with fresh accounts.
     purchased_matrix = tfidf_matrix[purchased_indices]
-    avg_vector       = purchased_matrix.mean(axis=0)
+    avg_vector       = np.asarray(purchased_matrix.mean(axis=0))
 
     # Compute similarity to all products
     sim_scores = cosine_similarity(avg_vector, tfidf_matrix).flatten()
