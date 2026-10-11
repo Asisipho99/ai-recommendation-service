@@ -14,6 +14,11 @@ def get_hybrid_recommendations(customer_id,
     Weights:
     - Collaborative filtering: 60%
     - Content-based filtering: 40%
+
+    Returns (results, source) where source is "hybrid" when the merge produced
+    something and "fallback" when it had to substitute popular products. The
+    caller needs to know which, so the API can label the response honestly
+    instead of always claiming a personalised result.
     """
     purchased_ids = get_customer_purchases(customer_id)
 
@@ -56,7 +61,8 @@ def get_hybrid_recommendations(customer_id,
     )[:n]
 
     if not sorted_recs:
-        return get_fallback_recommendations(n)
+        # Cold start: no interaction history to learn from yet.
+        return get_fallback_recommendations(n, exclude_ids=purchased_ids), "fallback"
 
     # Enrich with product details
     product_ids   = [r['product_id'] for r in sorted_recs]
@@ -79,15 +85,19 @@ def get_hybrid_recommendations(customer_id,
             "reason":      rec['reason']
         })
 
-    return results
+    return results, "hybrid"
 
 
-def get_fallback_recommendations(n=5):
+def get_fallback_recommendations(n=5, exclude_ids=None):
     """
     Cold-start fallback — return top purchased
     products globally when no user data exists.
+
+    `exclude_ids` keeps products the customer has already bought out of the
+    list. The personalised path already excludes them; the fallback used not
+    to, so a customer could be recommended the item they had just purchased.
     """
-    top_products = get_top_products(n)
+    top_products = get_top_products(n, exclude_ids=exclude_ids)
     return [{
         "product_id": p['product_id'],
         "name":       p.get('name',     'Unknown'),
