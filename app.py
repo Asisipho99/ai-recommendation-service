@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
+import traceback
 from datetime import datetime, timezone
 
 from database.db import (
@@ -19,15 +20,31 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Restrict CORS to known frontend origins
-allowed_origins = os.getenv(
-    'CORS_ALLOWED_ORIGINS',
+# Restrict CORS to known frontend origins.
+#
+# `or` rather than a getenv default on purpose. os.getenv returns '' for a
+# variable that is set but empty, which is not None, so the default would be
+# skipped and origins would become [''] - an allowlist matching nothing. That
+# rejects every origin, including localhost, while the service still answers
+# preflights with 200 and no Access-Control-Allow-Origin header. The browser
+# then blocks the real request and the only trace is a flood of OPTIONS with
+# no matching GET, which is almost impossible to read as a configuration
+# problem. Empty entries are filtered for the same reason.
+DEFAULT_ORIGINS = (
     'http://localhost:4200,http://localhost:4201,'
     'https://shopping-admin-production.up.railway.app,'
     'https://shopping-customer-production.up.railway.app'
-).split(',')
+)
 
-CORS(app, origins=[o.strip() for o in allowed_origins])
+allowed_origins = [
+    o.strip()
+    for o in (os.getenv('CORS_ALLOWED_ORIGINS') or DEFAULT_ORIGINS).split(',')
+    if o.strip()
+] or [o.strip() for o in DEFAULT_ORIGINS.split(',')]
+
+CORS(app, origins=allowed_origins)
+print(f"[cors] allowing {len(allowed_origins)} origin(s): "
+      f"{', '.join(allowed_origins)}")
 
 # Run at import, not under `if __name__ == '__main__'`. The container starts
 # gunicorn, which imports this module rather than executing it, so anything in
@@ -202,9 +219,16 @@ def get_recommendations(customer_id):
         get_hybrid_recommendations,
     )
 
+    # Parsed before the try so the exception handler can still honour it. A
+    # bad ?n= is the caller's mistake, not a server failure, so it is rejected
+    # rather than silently defaulted.
     try:
         n = int(request.args.get('n', 5))
+    except (TypeError, ValueError):
+        return error("'n' must be an integer")
+    n = max(1, min(n, 100))
 
+    try:
         products       = get_all_products()
         all_product_ids = [p['product_id'] for p in products]
 
@@ -231,16 +255,27 @@ def get_recommendations(customer_id):
         })
 
     except Exception as e:
-        print(f"Recommendation error: {e}")
         # Always return something usable — a failure here must not break the
-        # page that displays it.
+        # page that displays it. But do not pretend a failure is a cold start:
+        # both used to answer with an identical {"type": "fallback"}, so a
+        # genuine error was indistinguishable from a customer who simply has
+        # no history, and the only clue was this log line. `degraded` makes the
+        # difference visible to a caller. It is an additive field, so the
+        # frontends' 'hybrid' | 'fallback' union still holds.
+        print(f"Recommendation error for customer {customer_id}: "
+              f"{type(e).__name__}: {e}")
+        traceback.print_exc()
         try:
-            fallback = get_fallback_recommendations(5)
+            # Honour the requested n. Hardcoding 5 here meant a degraded
+            # response was silently capped, which is what made this path
+            # identifiable from outside but was never intended.
+            fallback = get_fallback_recommendations(n)
             return success({
                 "customer_id":     customer_id,
                 "recommendations": fallback,
                 "count":           len(fallback),
                 "type":            "fallback",
+                "degraded":        True,
                 "generated_at":    _now()
             })
         except Exception:
