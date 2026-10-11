@@ -54,6 +54,66 @@ print(f"[cors] allowing {len(allowed_origins)} origin(s): "
 # dataset routes serving.
 ensure_schema()
 
+
+def warm_models():
+    """Train any recommender model that is missing from disk.
+
+    The container filesystem is ephemeral. Every deployment starts a fresh
+    container with an empty model/ directory, while the interactions that
+    train the models live in MySQL and survive. The pickles therefore vanish
+    on each deploy, and because the retraining logic lived in the __main__
+    block - which gunicorn never executes - a freshly deployed instance
+    served popularity-only results until somebody remembered to POST
+    /api/recommendations/retrain by hand. Nothing in the response said so:
+    the degraded state was reported as an ordinary cold start.
+
+    Only trains what is absent, so a restart that still has its models is
+    cheap. Every failure is swallowed: scikit-surprise is a compiled
+    dependency that is not always importable, the database may not be
+    configured yet, and neither should stop /health or the filesystem-backed
+    dataset and ML routes from serving.
+    """
+    try:
+        products = get_all_products()
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"[warm] database unreachable, skipping model warm-up: {exc}")
+        return
+
+    if not os.path.exists("model/content_model.pkl"):
+        try:
+            from recommender.content_based import build_content_features
+            if products:
+                build_content_features(products)
+                print(f"[warm] content model trained on {len(products)} "
+                      f"products")
+            else:
+                print("[warm] no products, content model skipped")
+        except Exception as exc:                              # noqa: BLE001
+            print(f"[warm] content model training failed: "
+                  f"{type(exc).__name__}: {exc}")
+    else:
+        print("[warm] content model already on disk")
+
+    if not os.path.exists("model/collaborative_model.pkl"):
+        try:
+            from recommender.collaborative import train_collaborative_model
+            interactions = get_interactions()
+            if len(interactions) >= 5:
+                train_collaborative_model(interactions)
+                print(f"[warm] collaborative model trained on "
+                      f"{len(interactions)} interactions")
+            else:
+                print(f"[warm] only {len(interactions)} interactions, "
+                      f"collaborative model needs 5")
+        except Exception as exc:                              # noqa: BLE001
+            print(f"[warm] collaborative model training failed: "
+                  f"{type(exc).__name__}: {exc}")
+    else:
+        print("[warm] collaborative model already on disk")
+
+
+warm_models()
+
 # How many raw rows the data pipeline will read. The full dataset is about a
 # million rows; capping it keeps a small container within its memory budget.
 DATA_ROW_LIMIT = int(os.getenv('DATA_ROW_LIMIT', '0')) or None
@@ -450,10 +510,6 @@ def _now():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"AI Recommendation Service starting on port {port}")
-
-    # On startup, only retrain if no saved model exists.
-    # If models are already saved (from a previous run), load them directly
-    # to avoid losing trained state on container restart.
     try:
         from recommender.collaborative import train_collaborative_model
         from recommender.content_based import build_content_features
