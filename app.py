@@ -13,7 +13,8 @@ _download_lock = threading.Lock()
 from database.db import (
     get_interactions, get_all_products,
     get_product_details, log_interaction,
-    get_top_products, ensure_schema
+    get_top_products, get_customer_purchases,
+    ensure_schema
 )
 
 # The recommender modules are imported lazily inside their handlers. They pull
@@ -389,7 +390,19 @@ def get_recommendations(customer_id):
             # Honour the requested n. Hardcoding 5 here meant a degraded
             # response was silently capped, which is what made this path
             # identifiable from outside but was never intended.
-            fallback = get_fallback_recommendations(n)
+            #
+            # Exclude what the customer already bought, like every other
+            # tier. Tier 2 inside hybrid.py already passed exclude_ids; this
+            # call site did not, so a degraded response could recommend an
+            # item the customer had just purchased. The lookup gets its own
+            # try/except because this path is reached BECAUSE something
+            # failed - possibly the database itself - and a second failure
+            # here must not turn a usable degraded response into a 400.
+            try:
+                purchased_ids = get_customer_purchases(customer_id)
+            except Exception:
+                purchased_ids = []
+            fallback = get_fallback_recommendations(n, exclude_ids=purchased_ids)
             return success({
                 "customer_id":     customer_id,
                 "recommendations": fallback,
