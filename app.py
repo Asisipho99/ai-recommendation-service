@@ -367,13 +367,24 @@ def get_recommendations(customer_id):
         recommendations, source = get_hybrid_recommendations(
             customer_id, all_product_ids, n=n)
 
-        return success({
+        payload = {
             "customer_id":     customer_id,
             "recommendations": recommendations,
             "count":           len(recommendations),
-            "type":            source,
+            "type":            "fallback" if source == "interest" else source,
             "generated_at":    _now()
-        })
+        }
+
+        # The interest-seeded tier reports "type": "fallback" and is
+        # distinguished by an additive boolean instead of a third `type`
+        # value. The Angular client types `type` as the union
+        # 'hybrid' | 'fallback', the services deploy independently so a
+        # client can be older than the API, and a new `type` value would
+        # break it. Emitted only when true, exactly like `degraded` below.
+        if source == "interest":
+            payload["interest_seeded"] = True
+
+        return success(payload)
 
     except Exception as e:
         # Always return something usable — a failure here must not break the

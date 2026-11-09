@@ -1,5 +1,6 @@
 from recommender.collaborative import get_collaborative_recommendations
 from recommender.content_based  import get_content_recommendations
+from recommender.interests      import get_interest_recommendations
 from database.db                import (get_top_products,
                                         get_product_details,
                                         get_customer_purchases)
@@ -61,7 +62,13 @@ def get_hybrid_recommendations(customer_id,
     )[:n]
 
     if not sorted_recs:
-        # Cold start: no interaction history to learn from yet.
+        # Cold start: no interaction history to learn from yet. Try the
+        # customer's stated interests before falling back to what is popular
+        # with everybody.
+        interest_recs = get_interest_recommendations(
+            customer_id, n, exclude_ids=purchased_ids)
+        if interest_recs:
+            return interest_recs, "interest"
         return get_fallback_recommendations(n, exclude_ids=purchased_ids), "fallback"
 
     # Enrich with product details
