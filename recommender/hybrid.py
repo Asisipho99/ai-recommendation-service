@@ -2,6 +2,7 @@ from recommender.collaborative import get_collaborative_recommendations
 from recommender.content_based  import get_content_recommendations
 from recommender.interests      import get_interest_recommendations
 from database.db                import (get_top_products,
+                                        get_customer_interests,
                                         get_product_details,
                                         get_customer_purchases)
 
@@ -32,6 +33,33 @@ def normalise_content_score(similarity):
     already in [0, 1]. They are only clamped, never rescaled, so they stay
     comparable with the collaborative score on the same 0-1 scale."""
     return min(1.0, max(0.0, float(similarity)))
+
+
+# A modest, flat nudge for products in a category the customer picked as an
+# interest. It is added to the 0-1 blended score (so it is 5% of the scale),
+# once per product however many interests match, and the result is capped at
+# 1.0. It only re-scores products the collaborative and content strategies
+# already surfaced: it never adds a candidate and never removes one, so it can
+# reorder products whose blended scores sit within 0.05 of each other and
+# nothing more. Interests are a nudge, not a filter.
+INTEREST_BOOST = 0.05
+
+
+def _interest_categories(customer_id, purchased_ids):
+    """Lower-cased interest categories, or an empty set when no boost applies.
+
+    Only customers with purchase history are boosted: a customer without any
+    is served by the interest-seeded tier instead. A failed lookup means no
+    boost, never a failed recommendation.
+    """
+    if not purchased_ids:
+        return set()
+    try:
+        categories = get_customer_interests(customer_id)
+    except Exception as exc:
+        print(f"Interest lookup failed, ranking without a boost: {exc}")
+        return set()
+    return {str(c).strip().casefold() for c in categories or [] if c}
 
 
 def get_hybrid_recommendations(customer_id,
@@ -89,6 +117,20 @@ def get_hybrid_recommendations(customer_id,
                 "reason":     rec['reason']
             }
 
+    # Interest nudge for established customers: re-score the candidates the
+    # strategies already produced, before the cut to n.
+    product_map = {}
+    interest_categories = (
+        _interest_categories(customer_id, purchased_ids) if scores else set())
+    if interest_categories:
+        product_map = {
+            p['product_id']: p
+            for p in get_product_details(list(scores))
+        }
+        for pid, entry in scores.items():
+            category = str(product_map.get(pid, {}).get('category') or '')
+            if category.strip().casefold() in interest_categories:
+                entry['score'] = min(1.0, entry['score'] + INTEREST_BOOST)
     # Sort by combined score
     sorted_recs = sorted(
         scores.values(),
@@ -107,11 +149,12 @@ def get_hybrid_recommendations(customer_id,
         return get_fallback_recommendations(n, exclude_ids=purchased_ids), "fallback"
 
     # Enrich with product details
-    product_ids   = [r['product_id'] for r in sorted_recs]
-    product_map   = {
+    product_ids   = [r['product_id'] for r in sorted_recs
+                     if r['product_id'] not in product_map]
+    product_map.update({
         p['product_id']: p
         for p in get_product_details(product_ids)
-    }
+    })
 
     results = []
     for rec in sorted_recs:
