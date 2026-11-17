@@ -5,6 +5,35 @@ from database.db                import (get_top_products,
                                         get_product_details,
                                         get_customer_purchases)
 
+# Blend weights. Both inputs are put on a 0-1 scale first (see the two
+# normalise_* helpers), so these weights are the real, effective split.
+COLLABORATIVE_WEIGHT = 0.6
+CONTENT_WEIGHT       = 0.4
+
+# scikit-surprise predicts on the Reader rating scale used in
+# collaborative.train_collaborative_model: (1, 5).
+RATING_SCALE_MIN = 1.0
+RATING_SCALE_MAX = 5.0
+
+
+def normalise_collaborative_score(estimate):
+    """Map an SVD rating estimate on the 1-5 scale onto 0-1.
+
+    Fixed-scale min-max: (est - 1) / (5 - 1), clamped to [0, 1]. The scale is
+    the rating scale the model was trained on, not the spread of one request's
+    candidates, so a score means the same thing for every customer and request.
+    """
+    span = RATING_SCALE_MAX - RATING_SCALE_MIN
+    return min(1.0, max(0.0, (float(estimate) - RATING_SCALE_MIN) / span))
+
+
+def normalise_content_score(similarity):
+    """Content scores are cosine similarities of non-negative TF-IDF vectors,
+    already in [0, 1]. They are only clamped, never rescaled, so they stay
+    comparable with the collaborative score on the same 0-1 scale."""
+    return min(1.0, max(0.0, float(similarity)))
+
+
 def get_hybrid_recommendations(customer_id,
                                 all_product_ids,
                                 n=5):
@@ -15,6 +44,9 @@ def get_hybrid_recommendations(customer_id,
     Weights:
     - Collaborative filtering: 60%
     - Content-based filtering: 40%
+    Each score is normalised to 0-1 before it is weighted, otherwise the 1-5
+    collaborative rating estimate would outweigh the 0-1 content similarity
+    by about an order of magnitude whatever the weights say.
 
     Returns (results, source) where source is "hybrid" when the merge produced
     something and "fallback" when it had to substitute popular products. The
@@ -37,7 +69,8 @@ def get_hybrid_recommendations(customer_id,
         pid = rec['product_id']
         scores[pid] = {
             "product_id": pid,
-            "score":      rec['score'] * 0.6,
+            "score":      (normalise_collaborative_score(rec['score'])
+                           * COLLABORATIVE_WEIGHT),
             "reason":     rec['reason']
         }
 
@@ -45,12 +78,14 @@ def get_hybrid_recommendations(customer_id,
     for rec in content_recs:
         pid = rec['product_id']
         if pid in scores:
-            scores[pid]['score']  += rec['score'] * 0.4
+            scores[pid]['score']  += (normalise_content_score(rec['score'])
+                                      * CONTENT_WEIGHT)
             scores[pid]['reason']  = "Recommended based on your activity"
         else:
             scores[pid] = {
                 "product_id": pid,
-                "score":      rec['score'] * 0.4,
+                "score":      (normalise_content_score(rec['score'])
+                               * CONTENT_WEIGHT),
                 "reason":     rec['reason']
             }
 

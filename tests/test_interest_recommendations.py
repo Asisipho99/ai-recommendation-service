@@ -139,7 +139,7 @@ class TestInterestSeededTier:
 class TestHybridIsUnchanged:
     """The regression that matters: an existing customer's result is today's."""
 
-    def test_scored_history_still_produces_the_0_6_0_4_merge(
+    def test_scored_history_still_produces_the_0_6_0_4_merge_on_a_0_1_scale(
             self, client, monkeypatch):
         interest_calls = []
 
@@ -152,7 +152,7 @@ class TestHybridIsUnchanged:
         monkeypatch.setattr(
             hybrid_module, "get_collaborative_recommendations",
             lambda cid, all_ids, purchased, n=5: [
-                {"product_id": 1, "score": 0.8, "reason": "Customers like you bought this"}])
+                {"product_id": 1, "score": 4.2, "reason": "Customers like you bought this"}])
         monkeypatch.setattr(
             hybrid_module, "get_content_recommendations",
             lambda purchased, all_ids, n=5: [
@@ -173,7 +173,8 @@ class TestHybridIsUnchanged:
 
         scores = {item["product_id"]: item["score"]
                   for item in data["recommendations"]}
-        # 0.6 x collaborative + 0.4 x content, exactly as before.
+        # 0.6 x collaborative + 0.4 x content, both on a 0-1 scale. The
+        # collaborative score arrives as a 1-5 rating estimate: 4.2 -> 0.8.
         assert scores[1] == round(0.8 * 0.6 + 0.5 * 0.4, 4)
         assert scores[2] == round(0.9 * 0.4, 4)
 
