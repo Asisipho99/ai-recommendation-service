@@ -173,6 +173,76 @@ def get_top_products(limit=5, exclude_ids=None):
     conn.close()
     return rows
 
+# user-service OWNS the customer_interests table: it maps the rows with a JPA
+# entity and Hibernate creates them (spring.jpa.hibernate.ddl-auto=update),
+# exactly the way customers is managed. Unlike product_interactions above there
+# is deliberately no DDL here and ensure_schema() must NOT be extended - this
+# service only reads. If the table is absent because user-service has not been
+# deployed yet, the mysql.connector.Error propagates and the recommendation
+# route's existing except turns it into the degraded tier, which is the correct
+# behaviour and is why the deployment order puts user-service first.
+def get_customer_interests(customer_id):
+    """Categories a customer picked as interests, ascending alphabetical."""
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT category
+        FROM customer_interests
+        WHERE customer_id = %s
+        ORDER BY category ASC
+    """, (customer_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return [r['category'] for r in rows]
+
+def get_top_products_by_categories(categories, limit=5, exclude_ids=None):
+    """Most-purchased active products restricted to the given categories.
+
+    The category-scoped twin of get_top_products, used to seed recommendations
+    for a customer who has interests but no interaction history. `exclude_ids`
+    drops products the customer already bought, as every other tier does.
+    """
+    categories = list(categories or [])
+    if not categories:
+        # No interests, no query - an empty list would emit `IN ()`, which is
+        # not valid SQL.
+        return []
+
+    exclude_ids = list(exclude_ids or [])
+
+    category_placeholders = ",".join(["%s"] * len(categories))
+    sql = f"""
+        SELECT p.product_id, p.name, p.category,
+               p.price, p.image_url,
+               COUNT(oi.item_id) as purchase_count
+        FROM products p
+        LEFT JOIN order_items oi ON p.product_id = oi.product_id
+        WHERE p.deleted_at IS NULL
+          AND p.category IN ({category_placeholders})
+    """
+    params = list(categories)
+
+    if exclude_ids:
+        placeholders = ",".join(["%s"] * len(exclude_ids))
+        sql += f" AND p.product_id NOT IN ({placeholders})"
+        params.extend(exclude_ids)
+
+    sql += """
+        GROUP BY p.product_id
+        ORDER BY purchase_count DESC
+        LIMIT %s
+    """
+    params.append(limit)
+
+    conn = get_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(sql, tuple(params))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
 def get_product_details(product_ids):
     """Get full product details for a list of IDs."""
     if not product_ids:
